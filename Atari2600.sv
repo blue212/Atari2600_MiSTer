@@ -156,6 +156,9 @@ localparam CONF_STR = {
 	"OBC,Control,Joystick,Paddle,Auto(Single);",
 	"ODE,Paddle map,X1+X2 X3+X4,X1+X3 X2+X4,X1+Y1 X2+Y2,X1-Y1 X2-Y2;",
 	"OF,Paddle swap,No,Yes;",
+	"OG,Swap Joysticks,No,Yes;",
+	"OH,Serial Mode,None,SNAC;",
+	"OI,Paddle ADC,No,Yes;",
 	"R0,Reset;",
 	"J1,Fire,Paddle1(x),Paddle2(y),Game Reset,Game Select;",
 	"V,v",`BUILD_DATE
@@ -293,8 +296,12 @@ assign AUDIO_L = AUDIO_R;
 assign AUDIO_S = 0;
 assign AUDIO_MIX = 0;
 
-wire p_1 = status[14] ? ~j0[5] : ~|j0[6:5];
-wire p_2 = status[14] ? ~j0[6] : status[13] ? ~|joy_2[6:5] : ~|joy_1[6:5];
+wire joy_swap = status[16];
+wire serial = status[17];
+wire ADC = status[18];
+
+wire p_1 = ADC ? USER_IN[5] : (status[14] ? ~j0[5] : ~|j0[6:5]);
+wire p_2 = ADC ? USER_IN[3] : (status[14] ? ~j0[6] : status[13] ? ~|joy_2[6:5] : ~|joy_1[6:5]);
 wire p_3 = status[14] ? ~joy_1[5] : status[13] ? ~|joy_1[6:5] : ~|joy_2[6:5];
 wire p_4 = status[14] ? ~joy_1[6] : ~|joy_3[6:5];
 
@@ -318,17 +325,17 @@ A2601top A2601top
 	.O_VIDEO_G(G),
 	.O_VIDEO_B(B),
 
-	.p1_r(~joy_0[0]),
-	.p1_l(~joy_0[1]),
-	.p1_d(~joy_0[2]),
-	.p1_u(~joy_0[3]),
-	.p1_f(~joy_0[4]),
+	.p1_r(joy_swap ? (serial ? ~joy_0[0] : ~joy_1[0]) : (serial ? USER_IN[3] : ~joy_0[0])),	
+	.p1_l(joy_swap ? (serial ? ~joy_0[1] : ~joy_1[1]) : (serial ? USER_IN[5] : ~joy_0[1])),
+	.p1_d(joy_swap ? (serial ? ~joy_0[2] : ~joy_1[2]) : (serial ? USER_IN[0] : ~joy_0[2])),
+	.p1_u(joy_swap ? (serial ? ~joy_0[3] : ~joy_1[3]) : (serial ? USER_IN[1] : ~joy_0[3])),
+	.p1_f(joy_swap ? (serial ? ~joy_0[4] : ~joy_1[4]) : (serial ? USER_IN[2] : ~joy_0[4])),
 
-	.p2_r(~joy_1[0]),
-	.p2_l(~joy_1[1]),
-	.p2_d(~joy_1[2]),
-	.p2_u(~joy_1[3]),
-	.p2_f(~joy_1[4]),
+	.p2_r(joy_swap ? (serial ? USER_IN[3] : ~joy_0[0]) : (serial ? ~joy_0[0] : ~joy_1[0])),
+	.p2_l(joy_swap ? (serial ? USER_IN[5] : ~joy_0[1]) : (serial ? ~joy_0[1] : ~joy_1[1])),
+	.p2_d(joy_swap ? (serial ? USER_IN[0] : ~joy_0[2]) : (serial ? ~joy_0[2] : ~joy_1[2])),
+	.p2_u(joy_swap ? (serial ? USER_IN[1] : ~joy_0[3]) : (serial ? ~joy_0[3] : ~joy_1[3])),
+	.p2_f(joy_swap ? (serial ? USER_IN[2] : ~joy_0[4]) : (serial ? ~joy_0[4] : ~joy_1[4])),
 
 	.p_1(status[15] ? p_2 : p_1),
 	.p_2(status[15] ? p_1 : p_2),
@@ -407,9 +414,13 @@ video_mixer #(.LINE_LENGTH(250)) video_mixer
 
 //////////////////   ANALOG AXIS   ///////////////////
 reg        emu = 0;
-wire [7:0] ax = emu ? mx[7:0] : joya_0[7:0];
-wire [7:0] ay = emu ? my[7:0] : joya_0[15:8];
+wire [7:0] ax = ADC ? serx : (emu ? mx[7:0] : joya_0[7:0]);
+wire [7:0] ay = ADC ? sery : (emu ? my[7:0] : joya_0[15:8]);
 wire [8:0] j0 = emu ? {1'b0, ps2_mouse[2:0], joy_0[4:0]} : joy_0[8:0];
+
+//convert the range of the adc to signed 8 bit
+wire signed [7:0] serx = (((dout2[11:0] - 300) * 255) / 1200) - 128;
+wire signed [7:0] sery = (((dout2[23:12] - 300) * 255) / 1200) - 128;
 
 reg  signed [8:0] mx = 0;
 wire signed [8:0] mdx = {ps2_mouse[4],ps2_mouse[4],ps2_mouse[15:9]};
@@ -423,6 +434,20 @@ wire signed [8:0] nmy = my + mdy2;
 
 always @(posedge clk_sys) begin
 	reg old_stb = 0;
+	//limit the range of the adc
+	if (dout[11:0] < 9'd300 || dout[11:0] > 13'd1500) begin
+		if (dout[11:0] < 9'd300) dout2[11:0] <= 9'd300;		
+		else if (dout[11:0] > 13'd1500) dout2[11:0] <= 13'd1500;
+	end else begin
+		dout2[11:0] <= dout[11:0];
+	end
+	//other paddle
+	if (dout[23:12] < 9'd300 || dout[23:12] > 13'd1500) begin
+		if (dout[23:12] < 9'd300) dout2[23:12] <= 13'd1500;
+		else if (dout[23:12] > 13'd1500) dout2[23:12] <= 13'd1500;		
+	end else begin
+		dout2[23:12] <= dout[23:12];
+	end
 	
 	old_stb <= ps2_mouse[24];
 	if(old_stb != ps2_mouse[24]) begin
@@ -437,5 +462,17 @@ always @(posedge clk_sys) begin
 		my <= 0;
 	end
 end
+
+//adc
+wire tape_sync;
+reg   [23:0] dout2;
+reg   [23:0] dout;
+ltc2308 ltc2308
+(
+	.clk(CLK_50M),
+	.ADC_BUS(ADC_BUS),
+	.dout_sync(tape_sync),
+	.dout(dout)
+);
 
 endmodule
